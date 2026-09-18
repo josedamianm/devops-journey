@@ -1,262 +1,262 @@
 # Challenge 03 — Break and Repair systemd-boot
 
 ## Objective
-The objective of this challenge is to break and repair the boot process (systemd-boot), to undertand completely it.
+
+Intentionally make the installed Arch Linux system unbootable by configuring its systemd-boot entry to reference a nonexistent kernel, then recover it from the Arch live ISO without reinstalling the bootloader, rebuilding the initramfs, restoring a VM snapshot, or reinstalling the operating system.
 
 ## Environment and storage layout
-josemanco@arch-lab ~]$ sudo bootctl status
-sudo bootctl list
-System:
-      Firmware: UEFI 2.70 (EDK II 1.00)
- Firmware Arch: x64
-   Secure Boot: disabled (unsupported)
-  TPM2 Support: no
-  Measured UKI: no
-   Measured OS: no
-  Boot into FW: supported
- Platform Lang: n/a
 
-Current Boot Loader:
-        Product: systemd-boot 261.3-1-arch
-       Features: ✓ Boot counting
-                 ✓ Menu timeout control
-                 ✓ One-shot menu timeout control
-                 ✓ Default entry control
-                 ✓ One-shot entry control
-                 ✓ Support for XBOOTLDR partition
-                 ✓ Support for passing random seed to OS
-                 ✓ Load drop-in drivers
-                 ✓ Support Type #1 sort-key field
-                 ✓ Support @saved pseudo-entry
-                 ✓ Support Type #1 devicetree field
-                 ✓ Enroll SecureBoot keys
-                 ✓ Retain SHIM protocols
-                 ✓ Menu can be disabled
-                 ✓ Multi-Profile UKIs are supported
-                 ✓ Loader reports network boot URL
-                 ✓ Support Type #1 uki field
-                 ✓ Support Type #1 uki-url field
-                 ✓ Loader reports active TPM2 PCR banks
-                 ✓ Loader reports firmware keyboard layout
-                 ✓ Loader measures SMBIOS information
-      Partition: /dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81
-         Loader: └─/boot//EFI/systemd/systemd-bootx64.efi
-Keyboard Layout: en-US
-  Current Entry: arch.conf
+- Hypervisor: UTM on macOS
+- Guest architecture: emulated x86_64
+- Firmware: UEFI 2.70 (EDK II 1.00)
+- Boot manager: systemd-boot 261.3-1-arch
+- Boot entry: `/boot/loader/entries/arch.conf`
+- EFI System Partition: `/dev/sda1`, FAT32, mounted at `/boot`
+- Root filesystem: `/dev/sda2`, ext4, mounted at `/`
+- Installed kernel: `/boot/vmlinuz-linux`
+- Installed initramfs: `/boot/initramfs-linux.img`
 
-Random Seed:
- System Token: set
-       Exists: yes
+## Healthy state
 
-Available Boot Loaders on ESP:
-          ESP: /boot (/dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81)
-         File: ├─/boot//EFI/systemd/systemd-bootx64.efi (systemd-boot 261.3-1-arch)
-               └─/boot//EFI/BOOT/BOOTX64.EFI (systemd-boot 261.3-1-arch)
+Before introducing the fault, `bootctl status` showed that UEFI had loaded systemd-boot from the EFI System Partition and that the current entry was `arch.conf`:
 
-Boot Loaders Listed in EFI Variables:
-        Title: Linux Boot Manager
-           ID: 0x0004
-       Status: active, boot-order
-    Partition: /dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81
-         File: └─/boot//EFI/systemd/systemd-bootx64.efi
+```text
+Firmware: UEFI 2.70 (EDK II 1.00)
+Product: systemd-boot 261.3-1-arch
+Partition: /dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81
+Loader: /boot//EFI/systemd/systemd-bootx64.efi
+Current Entry: arch.conf
+```
 
-Boot Loader Entry Locations:
-          ESP: /boot (/dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81, $BOOT)
-       config: /boot//loader/loader.conf
-        token: arch
+The healthy Type #1 boot entry resolved to the existing kernel and initramfs:
 
-Default Boot Loader Entry:
-         type: Boot Loader Specification Type #1 (.conf)
-        title: Arch Linux
-           id: arch.conf
-       source: /boot//loader/entries/arch.conf (on the EFI System Partition)
-        linux: /boot//vmlinuz-linux
-       initrd: /boot//initramfs-linux.img
-      options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
-         type: Boot Loader Specification Type #1 (.conf)
-        title: Arch Linux (default) (selected)
-           id: arch.conf
-       source: /boot//loader/entries/arch.conf (on the EFI System Partition)
-        linux: /boot//vmlinuz-linux
-       initrd: /boot//initramfs-linux.img
-      options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+```text
+title: Arch Linux
+id: arch.conf
+source: /boot//loader/entries/arch.conf
+linux: /boot//vmlinuz-linux
+initrd: /boot//initramfs-linux.img
+options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+```
 
-         type: Automatic
-        title: Reboot Into Firmware Interface
-           id: auto-reboot-to-firmware-setup
-       source: /sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f (on the EFI System Partition)
+A protected known-good copy of the entry was saved at `/root/arch.conf.known-good`. Matching SHA-256 hashes proved that the backup was byte-for-byte identical to the healthy entry:
+
+```text
+backup-ready
+7070628204ae5e617ba8f519bb62c00434cf63615888b0ffaed3cf06004bd743  /boot/loader/entries/arch.conf
+7070628204ae5e617ba8f519bb62c00434cf63615888b0ffaed3cf06004bd743  /root/arch.conf.known-good
+```
 
 ## Fault introduced
-For making the boot fail, we change the kernel, so the boot proccess wont be able to find it. we change from /boot//vmlinuz-linux to /boot//vmlinuz-linux.broken
 
-```
-[josemanco@arch-lab ~]$ sudo bootctl list
-         type: Boot Loader Specification Type #1 (.conf)
-        title: Arch Linux (default) (selected)
-           id: arch.conf
-       source: /boot//loader/entries/arch.conf (on the EFI System Partition)
-        linux: /boot//vmlinuz-linux.broken (No such file or directory)
-       initrd: /boot//initramfs-linux.img
-      options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+I did not change, rename, or delete the kernel. I changed only the `linux` path in `/boot/loader/entries/arch.conf`:
 
-         type: Automatic
-        title: Reboot Into Firmware Interface
-           id: auto-reboot-to-firmware-setup
-       source: /sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f (on the EFI System Partition)
+```diff
+-linux /vmlinuz-linux
++linux /vmlinuz-linux.broken
 ```
-As you can see the linux kernel says Not such file or directory for the bootctl list command
+
+The complete broken entry was:
+
+```text
+1:title Arch Linux
+2:linux /vmlinuz-linux.broken
+3:initrd /initramfs-linux.img
+4:options root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+```
+
+The following checks confirmed that the configured path was invalid while the real kernel remained intact:
+
+```text
+confirmed: configured kernel does not exist
+real kernel remains intact
+```
+
+`bootctl list` detected the invalid reference before rebooting:
+
+```text
+type: Boot Loader Specification Type #1 (.conf)
+title: Arch Linux (default) (selected)
+id: arch.conf
+source: /boot//loader/entries/arch.conf (on the EFI System Partition)
+linux: /boot//vmlinuz-linux.broken (No such file or directory)
+initrd: /boot//initramfs-linux.img
+options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+```
+
+The double slash in `/boot//vmlinuz-linux.broken` is how `bootctl` displays the ESP mount path joined to the absolute path stored in the entry. The entry itself contained `linux /vmlinuz-linux.broken`.
+
+## Failure observed
+
+After rebooting, the VM did not reach the installed kernel or login prompt. The failure message passed too quickly to capture, and UTM/UEFI fell back to the Firmware Interface.
+
+The failure is supported by the complete evidence chain:
+
+1. Before reboot, `bootctl list` reported `/vmlinuz-linux.broken` as missing.
+2. The real `/vmlinuz-linux` remained present, proving that the fault was limited to the entry.
+3. The installed system did not boot and UEFI returned to its Firmware Interface.
+4. Recovery had to be performed from the Arch live ISO.
+5. The system booted normally after only the entry path was corrected.
 
 ## Live ISO recovery
-<img width="1278" height="839" alt="Evidence3_1" src="https://github.com/user-attachments/assets/a06c3d9b-7a19-40d7-960e-1debc2a5235f" />
-<img width="958" height="420" alt="Evidence3_2" src="https://github.com/user-attachments/assets/81dfba8f-afb5-47f6-9c30-e88ecb857034" />
-<img width="813" height="843" alt="Evidence3_3" src="https://github.com/user-attachments/assets/97ac326e-74bc-44e9-9dfe-c7b774d433f2" />
+
+The Arch installation medium was booted in UEFI mode. `lsblk -f` identified `/dev/sda2` as the installed ext4 root filesystem and `/dev/sda1` as the FAT32 EFI System Partition.
+
+The filesystems were mounted in the required order:
+
+```bash
+mount /dev/sda2 /mnt
+mount --mkdir /dev/sda1 /mnt/boot
+```
+
+The mounted layout was verified as:
+
+```text
+/dev/sda2 on /mnt      type ext4
+/dev/sda1 on /mnt/boot type vfat
+```
+
+The first screenshot records the live ISO, storage discovery, mounts, and files present on both filesystems:
+
+<img width="1278" height="839" alt="Arch live ISO storage discovery and mounts" src="https://github.com/user-attachments/assets/a06c3d9b-7a19-40d7-960e-1debc2a5235f" />
+
+## Diagnosis
+
+The mounted system showed both the broken configuration and the intact real kernel:
+
+```bash
+cat /mnt/boot/loader/entries/arch.conf
+ls -lh /mnt/boot/vmlinuz*
+test ! -e /mnt/boot/vmlinuz-linux.broken \
+  && echo "diagnosis: configured kernel is missing"
+test -s /mnt/boot/vmlinuz-linux \
+  && echo "diagnosis: real kernel exists"
+```
+
+The checks returned:
+
+```text
+diagnosis: configured kernel is missing
+diagnosis: real kernel exists
+```
+
+A comparison with the known-good backup isolated the fault to one line:
+
+```diff
+--- /mnt/root/arch.conf.known-good
++++ /mnt/boot/loader/entries/arch.conf
+@@
+-linux /vmlinuz-linux
++linux /vmlinuz-linux.broken
+```
+
+<img width="958" height="420" alt="Diagnosis of the broken systemd-boot entry" src="https://github.com/user-attachments/assets/81dfba8f-afb5-47f6-9c30-e88ecb857034" />
+
+## Repair
+
+I entered the installed system with:
+
+```bash
+arch-chroot /mnt
+```
+
+I edited `/boot/loader/entries/arch.conf` and restored:
+
+```text
+linux /vmlinuz-linux
+```
+
+The corrected entry was verified against the known-good backup. The configured kernel existed, and the entry matched the backup.
+
+No bootloader installation or initramfs rebuild was performed. After leaving the chroot, I initially typed the wrong path in `umount -R /mount`; it failed without changing anything. I corrected it to:
+
+```bash
+umount -R /mnt
+findmnt -R /mnt
+```
+
+`findmnt -R /mnt` returned no output, confirming that the recovered installation was fully unmounted before rebooting.
+
+<img width="813" height="843" alt="Chroot repair and filesystem cleanup" src="https://github.com/user-attachments/assets/97ac326e-74bc-44e9-9dfe-c7b774d433f2" />
+
+## Root cause
+
+The boot chain failed at the handoff from systemd-boot to the Linux kernel:
+
+1. UEFI successfully loaded the systemd-boot EFI executable.
+2. systemd-boot successfully read the Type #1 entry `arch.conf`.
+3. The entry requested `/vmlinuz-linux.broken` from the EFI System Partition.
+4. That file did not exist.
+5. The real `/vmlinuz-linux` and `/initramfs-linux.img` were still intact.
+6. systemd-boot could not load the requested kernel, so it could not transfer control to it.
+7. Because the kernel never started, the initramfs was not executed and systemd never started as PID 1.
+8. Restoring the correct kernel path repaired the failed handoff.
+
+## Why `bootctl install` and `mkinitcpio -P` were unnecessary
+
+`bootctl install` was unnecessary because neither the systemd-boot EFI executable nor its UEFI registration was damaged. UEFI could still launch systemd-boot, and the fault was inside one entry file.
+
+`mkinitcpio -P` was unnecessary because the existing initramfs was present and had not been changed or corrupted. The boot process failed before the initramfs could be loaded.
+
+The smallest valid repair was therefore to correct one path in `arch.conf`. Reinstalling unrelated components would have added risk without addressing the root cause more directly.
 
 ## Post-repair verification
+
+After removing the live ISO and booting from disk, `bootctl status` confirmed:
+
+```text
+Product: systemd-boot 261.3-1-arch
+Current Entry: arch.conf
+Loader: /boot//EFI/systemd/systemd-bootx64.efi
 ```
------------------------------------------
-Evidence checkpoint 4:
------------------------------------------
-[josemanco@arch-lab ~]$ sudo bootctl status
-sudo bootctl list
 
-sudo grep -nE '^(title|linux|initrd|options)' \
-  /boot/loader/entries/arch.conf
+`bootctl list` and the entry file showed the corrected paths:
 
-findmnt /
-findmnt /boot
+```text
+linux: /boot//vmlinuz-linux
+initrd: /boot//initramfs-linux.img
+```
 
-systemd-analyze
-systemctl --failed
-uname -r
-[sudo] password for josemanco:
-System:
-      Firmware: UEFI 2.70 (EDK II 1.00)
- Firmware Arch: x64
-   Secure Boot: disabled (unsupported)
-  TPM2 Support: no
-  Measured UKI: no
-   Measured OS: no
-  Boot into FW: supported
- Platform Lang: n/a
-
-Current Boot Loader:
-        Product: systemd-boot 261.3-1-arch
-       Features: ✓ Boot counting
-                 ✓ Menu timeout control
-                 ✓ One-shot menu timeout control
-                 ✓ Default entry control
-                 ✓ One-shot entry control
-                 ✓ Support for XBOOTLDR partition
-                 ✓ Support for passing random seed to OS
-                 ✓ Load drop-in drivers
-                 ✓ Support Type #1 sort-key field
-                 ✓ Support @saved pseudo-entry
-                 ✓ Support Type #1 devicetree field
-                 ✓ Enroll SecureBoot keys
-                 ✓ Retain SHIM protocols
-                 ✓ Menu can be disabled
-                 ✓ Multi-Profile UKIs are supported
-                 ✓ Loader reports network boot URL
-                 ✓ Support Type #1 uki field
-                 ✓ Support Type #1 uki-url field
-                 ✓ Loader reports active TPM2 PCR banks
-                 ✓ Loader reports firmware keyboard layout
-                 ✓ Loader measures SMBIOS information
-      Partition: /dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81
-         Loader: └─/boot//EFI/systemd/systemd-bootx64.efi
-Keyboard Layout: en-US
-  Current Entry: arch.conf
-
-Random Seed:
- System Token: set
-       Exists: yes
-
-Available Boot Loaders on ESP:
-          ESP: /boot (/dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81)
-         File: ├─/boot//EFI/systemd/systemd-bootx64.efi (systemd-boot 261.3-1-arch)
-               └─/boot//EFI/BOOT/BOOTX64.EFI (systemd-boot 261.3-1-arch)
-
-Boot Loaders Listed in EFI Variables:
-        Title: Linux Boot Manager
-           ID: 0x0004
-       Status: active, boot-order
-    Partition: /dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81
-         File: └─/boot//EFI/systemd/systemd-bootx64.efi
-
-Boot Loader Entry Locations:
-          ESP: /boot (/dev/disk/by-partuuid/2877263b-3d73-4bd4-9af6-950f03a0bf81, $BOOT)
-       config: /boot//loader/loader.conf
-        token: arch
-
-Default Boot Loader Entry:
-         type: Boot Loader Specification Type #1 (.conf)
-        title: Arch Linux
-           id: arch.conf
-       source: /boot//loader/entries/arch.conf (on the EFI System Partition)
-        linux: /boot//vmlinuz-linux
-       initrd: /boot//initramfs-linux.img
-      options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
-         type: Boot Loader Specification Type #1 (.conf)
-        title: Arch Linux (default) (selected)
-           id: arch.conf
-       source: /boot//loader/entries/arch.conf (on the EFI System Partition)
-        linux: /boot//vmlinuz-linux
-       initrd: /boot//initramfs-linux.img
-      options: root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
-
-         type: Automatic
-        title: Reboot Into Firmware Interface
-           id: auto-reboot-to-firmware-setup
-       source: /sys/firmware/efi/efivars/LoaderEntries-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f (on the EFI System Partition)
+```text
 1:title Arch Linux
 2:linux /vmlinuz-linux
 3:initrd /initramfs-linux.img
 4:options root=UUID=905421a2-6060-4b64-b5f8-c2a0cb0721d8 rw
+```
+
+The installed filesystems were mounted correctly:
+
+```text
 TARGET SOURCE    FSTYPE OPTIONS
 /      /dev/sda2 ext4   rw,relatime
-TARGET SOURCE    FSTYPE OPTIONS
 /boot  /dev/sda1 vfat   rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=ascii,shortname=mixed,utf8,errors=remount-ro
+```
+
+The repaired system reached its target with no failed units:
+
+```text
 Startup finished in 1.652s (kernel) + 7.773s (initrd) + 15.189s (userspace) = 24.615s
 graphical.target reached after 15.181s in userspace.
-  UNIT LOAD ACTIVE SUB DESCRIPTION
 
 0 loaded units listed.
 7.2.6-arch2-1
-[josemanco@arch-lab ~]$
-[josemanco@arch-lab ~]$
-[josemanco@arch-lab ~]$ who -b
-journalctl -b --no-pager -n 30
-         system boot  2026-09-18 11:06
-Sep 18 11:07:10 arch-lab systemd[323]: Starting D-Bus User Message Bus Socket...
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG network certificate management daemon.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG cryptographic agent and passphrase cache (access for web browsers).
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG cryptographic agent and passphrase cache (restricted).
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG cryptographic agent (ssh-agent emulation).
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG cryptographic agent and passphrase cache.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on GnuPG public key management service.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on p11-kit server.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on Query the User Interactively for a Password.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on Disk Image Download Service Socket.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on Journal Log Access Socket.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on Virtual Machine and Container Registration Service Socket.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on Simple File System Backed Storage Provider.
-Sep 18 11:07:10 arch-lab systemd[323]: Listening on D-Bus User Message Bus Socket.
-Sep 18 11:07:10 arch-lab systemd[323]: Reached target Sockets.
-Sep 18 11:07:10 arch-lab systemd[323]: Reached target Basic System.
-Sep 18 11:07:10 arch-lab systemd[323]: Reached target Main User Target.
-Sep 18 11:07:10 arch-lab systemd[323]: Startup finished in 828ms.
-Sep 18 11:07:10 arch-lab systemd[1]: Started User Manager for UID 1000.
-Sep 18 11:07:10 arch-lab systemd[1]: Started Session 1 of User josemanco.
-Sep 18 11:07:13 arch-lab kernel: clocksource: Watchdog remote CPU 1 read timed out
-Sep 18 11:07:17 arch-lab sudo[349]: josemanco : TTY=pts/0 ; PWD=/home/josemanco ; USER=root ; COMMAND=/usr/bin/bootctl status
-Sep 18 11:07:17 arch-lab sudo[349]: pam_unix(sudo:session): session opened for user root(uid=0) by josemanco(uid=1000)
-Sep 18 11:07:18 arch-lab sudo[349]: pam_unix(sudo:session): session closed for user root
-Sep 18 11:07:18 arch-lab sudo[358]: josemanco : TTY=pts/0 ; PWD=/home/josemanco ; USER=root ; COMMAND=/usr/bin/bootctl list
-Sep 18 11:07:18 arch-lab sudo[358]: pam_unix(sudo:session): session opened for user root(uid=0) by josemanco(uid=1000)
-Sep 18 11:07:18 arch-lab sudo[358]: pam_unix(sudo:session): session closed for user root
-Sep 18 11:07:18 arch-lab sudo[365]: josemanco : TTY=pts/0 ; PWD=/home/josemanco ; USER=root ; COMMAND=/usr/bin/grep -nE ^(title|linux|initrd|options) /boot/loader/entries/arch.conf
-Sep 18 11:07:18 arch-lab sudo[365]: pam_unix(sudo:session): session opened for user root(uid=0) by josemanco(uid=1000)
-Sep 18 11:07:18 arch-lab sudo[365]: pam_unix(sudo:session): session closed for user root
-[josemanco@arch-lab ~]$
-
 ```
+
+A new successful boot was recorded:
+
+```text
+system boot  2026-09-18 11:06
+```
+
+## What I learned
+
+- A bootloader can run correctly while the operating system remains unbootable because a boot entry points to the wrong kernel path.
+- A Type #1 systemd-boot entry describes the kernel, initramfs, and kernel command line; it does not contain the kernel itself.
+- Diagnosis should identify the exact failed handoff before changing anything.
+- The live ISO plus `mount` and `arch-chroot` provides a recovery environment for an installed system that cannot boot.
+- The root filesystem must be mounted first and the EFI System Partition at `/mnt/boot` before editing this configuration.
+- Recovery should make the smallest necessary change. Reinstalling systemd-boot or rebuilding initramfs would not have been justified for this fault.
+
+## Result
+
+The controlled fault was reproduced, diagnosed from the Arch live ISO, repaired inside a chroot, and verified by a successful boot of the installed system. The repair changed only the incorrect kernel path and preserved the existing bootloader, kernel, initramfs, filesystems, and UEFI registration.
